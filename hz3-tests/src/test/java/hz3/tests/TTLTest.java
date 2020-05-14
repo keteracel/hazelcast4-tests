@@ -1,0 +1,106 @@
+package hz3.tests;
+
+import static org.junit.Assert.assertEquals;
+
+import java.net.InetSocketAddress;
+import java.util.Arrays;
+import java.util.Map.Entry;
+import java.util.concurrent.TimeUnit;
+
+import org.junit.BeforeClass;
+import org.junit.Test;
+
+import com.hazelcast.config.Config;
+import com.hazelcast.config.GroupConfig;
+import com.hazelcast.config.JoinConfig;
+import com.hazelcast.config.MulticastConfig;
+import com.hazelcast.config.NetworkConfig;
+import com.hazelcast.config.TcpIpConfig;
+import com.hazelcast.core.Hazelcast;
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.core.IMap;
+import com.hazelcast.map.EntryBackupProcessor;
+import com.hazelcast.map.EntryProcessor;
+
+public class TTLTest {
+
+    private static final String TEST_MAP_NAME = "test";
+
+    private static final String KEY1 = "key1";
+    private static final String VALUE1 = "value1";
+    private static final String VALUE2 = "value2";
+
+    private static HazelcastInstance hazelcastInstance1;
+    private static HazelcastInstance hazelcastInstance2;
+    private static HazelcastInstance hazelcastInstance3;
+
+    @BeforeClass
+    public static void init() {
+        Config c = new Config();
+        c.setGroupConfig(new GroupConfig(TTLTest.class.getName()));
+        c.setNetworkConfig(new NetworkConfig().setJoin(new JoinConfig().setMulticastConfig(new MulticastConfig().setEnabled(false)).setTcpIpConfig(new TcpIpConfig().setEnabled(true))));
+        
+        hazelcastInstance1 = Hazelcast.newHazelcastInstance(c);
+        InetSocketAddress hz1address = (InetSocketAddress)hazelcastInstance1.getLocalEndpoint().getSocketAddress();
+        String hz1addressString = hz1address.getHostString() + ":" + hz1address.getPort();
+        
+        c.getNetworkConfig().getJoin().getTcpIpConfig().setMembers(Arrays.asList(hz1addressString));
+        hazelcastInstance2 = Hazelcast.newHazelcastInstance(c);
+        
+        InetSocketAddress hz2address = (InetSocketAddress)hazelcastInstance1.getLocalEndpoint().getSocketAddress();
+        String hz2addressString = hz2address.getHostString() + ":" + hz2address.getPort();
+        c.getNetworkConfig().getJoin().getTcpIpConfig().setMembers(Arrays.asList(hz1addressString, hz2addressString));
+        hazelcastInstance3 = Hazelcast.newHazelcastInstance(c);
+    }
+
+    @Test
+    public void testTTL_OK_With_HZ3() {
+        assertEquals(3, hazelcastInstance1.getCluster().getMembers().size());
+        
+        getTestMap(hazelcastInstance1).set(KEY1, VALUE1);
+        getTestMap(hazelcastInstance2).setTtl(KEY1, 10, TimeUnit.SECONDS);
+
+        assertEquals(VALUE1, getTestMap(hazelcastInstance3).get(KEY1));
+        
+        assertEquals(10000L, getTestMap(hazelcastInstance3).getEntryView(KEY1).getTtl());
+
+        hazelcastInstance3.<String,String>getMap(TEST_MAP_NAME).executeOnKey(KEY1, new ChangeValueEntryProcessor(VALUE2));
+
+        assertEquals(10000, getTestMap(hazelcastInstance1).getEntryView(KEY1).getTtl());
+    }
+
+    public IMap<String,String> getTestMap(HazelcastInstance fromInstance) {
+        return fromInstance.<String,String>getMap(TEST_MAP_NAME);
+    }
+
+
+    public static class ChangeValueEntryProcessor implements EntryProcessor<String, String>, EntryBackupProcessor<String, String> {
+
+        private String newValue;
+
+        public ChangeValueEntryProcessor() {
+        }
+
+        public ChangeValueEntryProcessor(String newValue) {
+            this.newValue = newValue;
+        }
+
+        @Override
+        public EntryBackupProcessor<String, String> getBackupProcessor() {
+            return this;
+        }
+
+        @Override
+        public void processBackup(Entry<String, String> entry) {
+            process(entry);
+        }
+
+        @Override
+        public Object process(Entry<String, String> entry) {
+            return entry.setValue(newValue);
+        }
+
+    }
+
+    
+}
